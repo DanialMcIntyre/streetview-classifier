@@ -1,2 +1,8 @@
+# Ignore virtual environment
+.venv/
+
+# Ignore data files
 /canada_full_city
+
+# Ignore mac stuff
 .DS_Store
