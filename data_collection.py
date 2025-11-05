@@ -10,24 +10,25 @@ import json
 import logging
 
 #Config
-TOKEN = TOKEN = os.getenv("MAPILLARY_API_KEY", "")
+TOKEN = "MLY|32138826512431845|323b572d1cd6093dc7fc45443c235223"
 if not TOKEN:
     raise RuntimeError("No API token found. Aborting.")
 IMAGES_PER_CITY = 10000
-MASTER_DIR = r"E:\canada_full_city"
+MASTER_DIR = r"/Volumes/Extreme SSD/canada_full_city"
 FAILED_LOG_PATH = "failed_tiles.log"
 FAILED_DOWNLOAD_PATH = "failed_downloads.jsonl"
 DATA_DIR = "collected_files"
+MAX_DOWNLOAD_WORKERS = 30
 MAX_WORKERS = 30
 REQUESTS_PER_SECOND = 10
 
 CITIES = {
-    "ottawa-gatineau":      [-75.938347,45.244301,-75.45704,45.502476],
-    # "toronto":              [-79.587052,43.60741,-79.113219,43.825279],
-    # "montreal":             [-73.840956,45.413688,-73.487333,45.652261],
-    # "vancouver":            [-123.265566,49.198931,-123.023242,49.316171],
-    # "calgary":              [-114.279455,50.848748,-113.909353,51.188257],
-    # "edmonton":             [-113.713841,53.394321,-113.344344,53.651086],
+    #"ottawa-gatineau":      [-75.938347,45.244301,-75.45704,45.502476],
+    #"toronto":              [-79.587052,43.60741,-79.113219,43.825279],
+    #"montreal":             [-73.840956,45.413688,-73.487333,45.652261]
+    #"vancouver":            [-123.265566,49.198931,-123.023242,49.316171],
+    #"calgary":              [-114.279455,50.848748,-113.909353,51.188257],
+    #"edmonton":             [-113.713841,53.394321,-113.344344,53.651086],
     # "winnipeg":             [-97.325875,49.763144,-96.956529,49.972925],
     # "saskatoon":            [-106.765098,52.071159,-106.536187,52.202335],
     # "quebec_city":          [-71.371256,46.762893,-71.190277,46.879747],
@@ -35,8 +36,8 @@ CITIES = {
     # "kitchener-waterloo":   [-80.573458,43.326851,-80.257256,43.506828],
     # "halifax":              [-63.823841,44.53971,-63.205,44.851819],
     # "victoria":             [-123.391097,48.405878,-123.273155,48.472826],
-    # "st_johns":             [-52.919474,47.449785,-52.611841,47.659795],
-    # "charlottetown":        [-63.7443,46.1149,-62.506,46.4502]
+     "st_johns":             [-52.919474,47.449785,-52.611841,47.659795],
+    # "charlottetown":        [-64.4315,45.9687,-61.9573,47.0479]
 }
 
 random.seed(42) # Reproducible
@@ -95,7 +96,7 @@ def fetch_images_from_tile(tile: mercantile.Tile, city: str, idx: int, total: in
                     "access_token": TOKEN,
                     "bbox": bbox_str,
                     "fields": "id,thumb_1024_url,geometry,captured_at,camera_type", # Change depending on image size and other data
-                    "limit": 500
+                    "limit": 2000
                 },
                 timeout=60
             )
@@ -179,18 +180,28 @@ end_all = time.time()
 print(f"\nCollected {len(all_images):,} unique images across all cities "
       f"in {end_all - start_all:.1f}s")
 
-#Only select specific number of images to download
+# Only select specific number of images to download
 images_to_download = []
 
 for city in CITIES.keys():
-    city_imgs = [img for img in all_images if img["city"] == city]
+    # Filter out images without a valid URL
+    city_imgs = [
+        img for img in all_images
+        if img["city"] == city
+        and img.get("thumb_1024_url")
+        and isinstance(img["thumb_1024_url"], str)
+        and img["thumb_1024_url"].startswith("http")
+    ]
+    
     if len(city_imgs) <= IMAGES_PER_CITY:
         selected = city_imgs
     else:
         selected = random.sample(city_imgs, IMAGES_PER_CITY)
+    
     images_to_download.extend(selected)
 
-print(f"\nSelected {len(images_to_download)} images to download ({IMAGES_PER_CITY} per city)")
+print(f"\nSelected {len(images_to_download)} images to download ({IMAGES_PER_CITY} per city, only with valid URLs)")
+
 
 #Download images to computer
 os.makedirs(MASTER_DIR, exist_ok=True)
@@ -233,7 +244,7 @@ def download(img):
 print("\nDownloading images...")
 start_dl = time.time()
 
-with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+with ThreadPoolExecutor(max_workers=MAX_DOWNLOAD_WORKERS) as pool:
     futures = [pool.submit(download, img) for img in images_to_download]
     for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading", unit="img"):
         ok, fail_record = future.result()
@@ -243,7 +254,7 @@ with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
 end_dl = time.time()
 
 if failed_downloads:
-    with open(os.path.join(DATA_DIR, FAILED_DOWNLOAD_PATH), 'w') as f:
+    with open(os.path.join(DATA_DIR, FAILED_DOWNLOAD_PATH), 'a') as f:
         for obj in failed_downloads:
             json_line = json.dumps(obj, ensure_ascii=False)
             f.write(json_line + "\n")
