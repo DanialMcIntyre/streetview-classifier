@@ -1,74 +1,125 @@
 import requests
 import mercantile
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import random
 import time
+from typing import List, Dict
 
+# =============================================
+# CONFIG
+# =============================================
 TOKEN = ""
 IMAGES_PER_CITY = 10
-MASTER_DIR = "canada_cities"
+MASTER_DIR = "canada_full_city"
+MAX_WORKERS = 30
+REQUESTS_PER_SECOND = 15
 
 CITIES = {
-    "toronto":       [-79.65, 43.58, -79.10, 43.86],
-    "montreal":      [-73.98, 45.40, -73.45, 45.70],
-    "vancouver":     [-123.30, 49.18, -122.95, 49.35],
-    "calgary":       [-114.35, 50.84, -113.85, 51.20],
-    "edmonton":      [-113.75, 53.38, -113.25, 53.70],
-    "ottawa":        [-76.05, 45.20, -75.40, 45.55],
-    "winnipeg":      [-97.35, 49.75, -96.90, 50.05],
-    "quebec_city":   [-71.45, 46.70, -71.10, 46.95],
-    "hamilton":      [-80.10, 43.15, -79.65, 43.45],
-    "kitchener":     [-80.70, 43.35, -80.30, 43.60],
-    "london_on":     [-81.40, 42.90, -81.10, 43.10],
-    "halifax":       [-63.75, 44.58, -63.45, 44.80],
-    "victoria":      [-123.55, 48.35, -123.25, 48.55]
+    "toronto":       [-79.65, 43.58, -79.10, 43.86]
+    # "montreal":      [-73.98, 45.40, -73.45, 45.70],
+    # "vancouver":     [-123.30, 49.18, -122.95, 49.35],
+    # "calgary":       [-114.35, 50.84, -113.85, 51.20],
+    # "edmonton":      [-113.75, 53.38, -113.25, 53.70],
+    # "ottawa":        [-76.05, 45.20, -75.40, 45.55],
+    # "winnipeg":      [-97.35, 49.75, -96.90, 50.05],
+    # "quebec_city":   [-71.45, 46.70, -71.10, 46.95],
+    # "hamilton":      [-80.10, 43.15, -79.65, 43.45],
+    # "kitchener":     [-80.70, 43.35, -80.30, 43.60],
+    # "london_on":     [-81.40, 42.90, -81.10, 43.10]
+    # "halifax":       [-63.75, 44.58, -63.45, 44.80],
+    # "victoria":      [-123.55, 48.35, -123.25, 48.55]
 }
 
+# Rate limiter
+class RateLimiter:
+    def __init__(self, calls_per_second):
+        self.calls_per_second = calls_per_second
+        self.min_interval = 1.0 / calls_per_second
+        self.last_called = 0
 
-#Collect all images using tiling
-all_images = []
+    def wait(self):
+        now = time.time()
+        elapsed = now - self.last_called
+        sleep_time = max(0, self.min_interval - elapsed)
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+        self.last_called = time.time()
 
-print(f"Collecting ALL images for each city...")
+rate_limiter = RateLimiter(REQUESTS_PER_SECOND)
 
+def fetch_images_from_tile(tile: mercantile.Tile, city: str) -> list[Dict]:
+    rate_limiter.wait()
+    west, south, east, north = mercantile.bounds(tile)
+    bbox_str = f"{west:.6f},{south:.6f},{east:.6f},{north:.6f}"
+
+    try:
+        resp = requests.get(
+            "https://graph.mapillary.com/images",
+            params={
+                "access_token": TOKEN,
+                "bbox": bbox_str,
+                "fields": "id,thumb_2048_url,geometry,captured_at",
+                "limit": 2000
+            },
+            timeout=60
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        for img in data:
+            img["city"] = city
+        return data
+    except Exception as e:
+        print(f"ERROR tile {tile.x}/{tile.y}/{tile.z}: {e}")
+        return []
+
+# =============================================
+# FAST TILING WITH CONCURRENCY
+# =============================================
+all_images: List[Dict] = []
+seen_ids: set[str] = set() 
+
+print("Collecting images with parallel tile fetching (unique per id)...")
 start_all = time.time()
+
 for city, bbox in CITIES.items():
     start_city = time.time()
-    print(f"\nTiling {city.title()}...")
+    print(f"\nTiling {city.title()} @ zoom 14...")
 
     tiles = list(mercantile.tiles(*bbox, zooms=[14]))
-    print(f"  Total tiles to check: {len(tiles)}")
-    city_images = []
+    print(f"  Total tiles: {len(tiles)} → using {MAX_WORKERS} workers")
 
-    for tile in tqdm(tiles, desc=f"{city} tiles", leave=False):
-        west, south, east, north = mercantile.bounds(tile)
-        bbox_str = f"{west:.6f},{south:.6f},{east:.6f},{north:.6f}"
+    city_images: List[Dict] = []
+    city_seen: set[str] = set()
 
-        try:
-            resp = requests.get(
-                "https://graph.mapillary.com/images",
-                params={
-                    "access_token": TOKEN,
-                    "bbox": bbox_str,
-                    "fields": "id,thumb_2048_url,geometry,captured_at",
-                    "limit": 200
-                },
-                timeout=10
-            )
-            data = resp.json()
-            for img in data.get("data", []):
-                img["city"] = city
-                city_images.append(img)
-        except Exception as e:
-            pass
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        future_to_tile = {
+            executor.submit(fetch_images_from_tile, tile, city): tile
+            for tile in tiles
+        }
+
+        for future in tqdm(as_completed(future_to_tile),
+                           total=len(tiles),
+                           desc=f"{city} tiles",
+                           leave=False):
+            imgs = future.result()
+
+            for img in imgs:
+                img_id = img["id"]
+                if img_id not in seen_ids and img_id not in city_seen:
+                    city_images.append(img)
+                    city_seen.add(img_id)
+                    seen_ids.add(img_id)
 
     end_city = time.time()
-    print(f"  {city.title():12} → {len(city_images)} total images found in {end_city - start_city:.2f} sec")
+    print(f"  {city.title():12} → {len(city_images):,} unique images "
+          f"({len(city_seen):,} total fetched) in {end_city - start_city:.1f}s")
     all_images.extend(city_images)
 
 end_all = time.time()
-print(f"\nCollected {len(all_images)} total images across all cities in {end_all - start_all:.2f} sec")
+print(f"\nCollected {len(all_images):,} unique images across all cities "
+      f"in {end_all - start_all:.1f}s")
 
 #Only select specific number of images to download
 images_to_download = []
@@ -83,7 +134,7 @@ for city in CITIES.keys():
 
 print(f"\nSelected {len(images_to_download)} images to download ({IMAGES_PER_CITY} per city)")
 
-#Download images
+# Download phase (optimized)
 os.makedirs(MASTER_DIR, exist_ok=True)
 total_size = 0
 
@@ -91,10 +142,8 @@ def download(img):
     global total_size
     city, img_id = img["city"], img["id"]
     url = img["thumb_2048_url"]
-
-    city_dir = os.path.join(MASTER_DIR, city)
-    os.makedirs(city_dir, exist_ok=True)
-    path = os.path.join(city_dir, f"{img_id}.jpg")
+    path = os.path.join(MASTER_DIR, city, f"{img_id}.jpg")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
 
     if os.path.exists(path):
         size = os.path.getsize(path)
@@ -103,21 +152,21 @@ def download(img):
 
     try:
         r = requests.get(url, timeout=15)
+        r.raise_for_status()
         size = len(r.content)
         with open(path, "wb") as f:
             f.write(r.content)
         total_size += size
-        return f"DOWNLOADED: {city}/{img_id}: {size/1024/1024:.2f} MB"
-    except Exception:
-        return f"FAILED: {city}/{img_id}"
+        return f"DOWNLOADED: {city}/{img_id}: {size/1024:.2f}KB"
+    except Exception as e:
+        return f"FAILED: {city}/{img_id} ({e})"
 
-print("\nDownloading selected 2048×1024 panoramas (sorted by city)...")
-start_download = time.time()
-with ThreadPoolExecutor(32) as pool:
+print("\nDownloading images...")
+start_dl = time.time()
+with ThreadPoolExecutor(50) as pool:
     for line in pool.map(download, images_to_download):
         print("  " + line)
-end_download = time.time()
+end_dl = time.time()
 
-total_gb = total_size / (1024 ** 3)
-print(f"\nDONE! {len(images_to_download)} images → {total_gb:.2f} GB saved in '{MASTER_DIR}/'")
-print(f"Download completed in {end_download - start_download:.2f} sec")
+print(f"\nDONE! {len(images_to_download)} images → {total_size / (1024**3):.2f} GB")
+print(f"Download time: {end_dl - start_dl:.1f}s")
