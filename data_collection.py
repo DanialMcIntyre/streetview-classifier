@@ -10,11 +10,11 @@ import json
 import logging
 
 #Config
-TOKEN = "MLY|32138826512431845|323b572d1cd6093dc7fc45443c235223"
+TOKEN = os.getenv("MAPILLARY_API_KEY")
 if not TOKEN:
     raise RuntimeError("No API token found. Aborting.")
 IMAGES_PER_CITY = 10000
-MASTER_DIR = r"/Volumes/Extreme SSD/canada_full_city"
+MASTER_DIR = r"E:\canada_full_city"
 FAILED_LOG_PATH = "failed_tiles.log"
 FAILED_DOWNLOAD_PATH = "failed_downloads.jsonl"
 DATA_DIR = "collected_files"
@@ -36,8 +36,8 @@ CITIES = {
     # "kitchener-waterloo":   [-80.573458,43.326851,-80.257256,43.506828],
     # "halifax":              [-63.823841,44.53971,-63.205,44.851819],
     # "victoria":             [-123.391097,48.405878,-123.273155,48.472826],
-     "st_johns":             [-52.919474,47.449785,-52.611841,47.659795],
-    # "charlottetown":        [-64.4315,45.9687,-61.9573,47.0479]
+    #  "st_johns":             [-52.919474,47.449785,-52.611841,47.659795],
+    "charlottetown":        [-64.4315,45.9687,-61.9573,47.0479]
 }
 
 random.seed(42) # Reproducible
@@ -105,7 +105,7 @@ def fetch_images_from_tile(tile: mercantile.Tile, city: str, idx: int, total: in
             filtered = []
             for img in data:
                 cam_type = img.get("camera_type", "").lower()
-                if any(bad in cam_type for bad in ["helmet", "head", "body", "spherical"]): # Might not have some of these fields according to API
+                if any(bad in cam_type for bad in ["spherical", "equirectangular"]): # Might not have some of these fields according to API
                     continue
                 img["city"] = city
                 filtered.append(img)
