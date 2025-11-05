@@ -12,22 +12,24 @@ TOKEN = ""
 IMAGES_PER_CITY = 10
 MASTER_DIR = "canada_full_city"
 MAX_WORKERS = 30
-REQUESTS_PER_SECOND = 15
+REQUESTS_PER_SECOND = 10
 
 CITIES = {
-    "toronto":       [-79.6506726, 43.3399715, -78.9970696, 43.9292617],
-    "montreal":      [-73.98, 45.40, -73.45, 45.70],
-    "vancouver":     [-123.30, 49.18, -122.95, 49.35],
-    "calgary":       [-114.35, 50.84, -113.85, 51.20],
-    "edmonton":      [-113.75, 53.38, -113.25, 53.70],
-    "ottawa":        [-76.05, 45.20, -75.40, 45.55],
-    "winnipeg":      [-97.35, 49.75, -96.90, 50.05],
-    "quebec_city":   [-71.45, 46.70, -71.10, 46.95],
-    "hamilton":      [-80.10, 43.15, -79.65, 43.45],
-    "kitchener":     [-80.70, 43.35, -80.30, 43.60],
-    "london_on":     [-81.40, 42.90, -81.10, 43.10],
-    "halifax":       [-63.75, 44.58, -63.45, 44.80],
-    "victoria":      [-123.55, 48.35, -123.25, 48.55]
+    "ottawa/gatineau":      [-75.938347,45.244301,-75.45704,45.502476],
+    "toronto":              [-79.587052,43.60741,-79.113219,43.825279],
+    "montreal":             [-73.840956,45.413688,-73.487333,45.652261],
+    "vancouver":            [-123.265566,49.198931,-123.023242,49.316171],
+    "calgary":              [-114.279455,50.848748,-113.909353,51.188257],
+    "edmonton":             [-113.713841,53.394321,-113.344344,53.651086],
+    "winnipeg":             [-97.325875,49.763144,-96.956529,49.972925],
+    "saskatoon":            [-106.765098,52.071159,-106.536187,52.202335],
+    "quebec_city":          [-71.371256,46.762893,-71.190277,46.879747],
+    "hamilton":             [-80.045308,43.19374,-79.740724,43.301648],
+    "kitchener/waterloo":   [-80.573458,43.326851,-80.257256,43.506828],
+    "halifax":              [-63.823841,44.53971,-63.205,44.851819],
+    "victoria":             [-123.391097,48.405878,-123.273155,48.472826],
+    "st_johns":             [-52.919474,47.449785,-52.611841,47.659795],
+    "charlottetown":        [-63.7443,46.1149,-62.506,46.4502]
 }
 
 # Rate limiter
@@ -65,9 +67,14 @@ def fetch_images_from_tile(tile: mercantile.Tile, city: str, idx: int, total: in
             )
             resp.raise_for_status()
             data = resp.json().get("data", [])
+            filtered = []
             for img in data:
+                cam_type = img.get("camera_type", "").lower()
+                if any(bad in cam_type for bad in ["helmet", "head", "body", "spherical"]):
+                    continue
                 img["city"] = city
-            return data
+                filtered.append(img)
+            return filtered
 
         except requests.exceptions.HTTPError as e:
             code = resp.status_code if "resp" in locals() else "N/A"
